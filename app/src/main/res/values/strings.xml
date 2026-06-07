@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App -->
+    <string name="app_name">FreeDrama Ad Skipper</string>
+    <string name="accessibility_service_label">FreeDrama Ad Skipper</string>
+    <string name="accessibility_service_description">Performs tap gestures to skip ads in FreeDrama. Does not read any personal content.</string>
+
+    <!-- Onboarding -->
+    <string name="step_overlay_title">Overlay Permission</string>
+    <string name="step_capture_title">Screen Capture</string>
+    <string name="step_access_title">Accessibility Service</string>
+
+    <!-- Notifications -->
+    <string name="notif_running">Detecting ads…</string>
+    <string name="notif_paused">Paused — tap to resume</string>
+    <string name="notif_stopped">Service stopped</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_stop">Stop</string>
+</resources>
