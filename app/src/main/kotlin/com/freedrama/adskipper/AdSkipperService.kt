@@ -98,7 +98,7 @@ class AdSkipperService : Service() {
         when (intent?.action) {
             SkipConfig.ACTION_START -> {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
-                val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
+                val resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
 
                 startForeground(SkipConfig.NOTIFICATION_ID, buildNotification(State.RUNNING))
 

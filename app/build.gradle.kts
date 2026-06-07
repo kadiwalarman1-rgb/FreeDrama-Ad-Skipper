@@ -42,6 +42,7 @@ android {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.activity.ktx)
     implementation(libs.material)
     implementation(libs.mlkit.text.recognition)
     implementation(libs.kotlinx.coroutines.android)

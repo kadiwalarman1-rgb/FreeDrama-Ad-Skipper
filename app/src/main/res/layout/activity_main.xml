@@ -162,8 +162,18 @@
                 android:text="Allows the app to read your screen to detect Skip Ad buttons. Done once per session."
                 android:textSize="13sp"
                 android:textColor="@color/text_secondary"
-                android:layout_marginTop="6dp"
-                android:layout_marginBottom="14dp" />
+                android:layout_marginTop="6dp" />
+
+            <TextView
+                android:id="@+id/tvCaptureStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tap button → system dialog aayega → 'Start Now' dabao"
+                android:textSize="12sp"
+                android:textColor="@color/text_secondary"
+                android:layout_marginTop="4dp"
+                android:layout_marginBottom="14dp"
+                android:fontFamily="monospace" />
 
             <Button
                 android:id="@+id/btnGrantCapture"
