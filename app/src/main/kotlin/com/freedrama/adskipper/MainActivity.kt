@@ -19,23 +19,25 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var mpManager: MediaProjectionManager
 
-    // Saved projection data
-    private var projectionResultCode = -1
-    private var projectionResultData: Intent? = null
+    companion object {
+        // ── STATIC — survives Activity recreation (config changes, window focus) ──
+        @Volatile var savedResultCode: Int    = -1
+        @Volatile var savedResultData: Intent? = null
+    }
 
-    // ── Modern ActivityResultLauncher (fixes Android 14+ screen capture) ────
     private val screenCaptureLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                projectionResultCode = result.resultCode
-                projectionResultData  = result.data!!.clone() as Intent
-                tvCaptureStatus.text  = "✅ Screen capture ready!"
+                // Save STATICALLY — so Activity recreation doesn't lose this
+                savedResultCode = result.resultCode
+                savedResultData = result.data          // No clone — direct reference
+                tvCaptureStatus.text = "✅ Screen capture ready! Ab Launch dabao."
                 tvCaptureStatus.setTextColor(0xFF22C55E.toInt())
                 Toast.makeText(this, "✓ Screen capture granted!", Toast.LENGTH_SHORT).show()
             } else {
-                projectionResultCode = -1
-                projectionResultData  = null
-                tvCaptureStatus.text  = "❌ Denied — dobara try karo, 'Entire Screen' choose karo"
+                savedResultCode = -1
+                savedResultData = null
+                tvCaptureStatus.text = "❌ Dobara try karo — 'Entire Screen' choose karo"
                 tvCaptureStatus.setTextColor(0xFFEF4444.toInt())
             }
             refreshAll()
@@ -45,18 +47,20 @@ class MainActivity : AppCompatActivity() {
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { refreshAll() }
 
     private val accessLauncher: ActivityResultLauncher<Intent> =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { refreshAll() }
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            window.decorView.postDelayed({ refreshAll() }, 500)
+        }
 
-    // ── Views ─────────────────────────────────────────────────────────────
-    private lateinit var btnOverlay       : Button
-    private lateinit var btnCapture       : Button
-    private lateinit var btnAccess        : Button
-    private lateinit var btnLaunch        : Button
-    private lateinit var checkOverlay     : ImageView
-    private lateinit var checkCapture     : ImageView
-    private lateinit var checkAccess      : ImageView
-    private lateinit var stepReady        : View
-    private lateinit var tvCaptureStatus  : TextView
+    private lateinit var btnOverlay      : Button
+    private lateinit var btnCapture      : Button
+    private lateinit var btnAccess       : Button
+    private lateinit var btnLaunch       : Button
+    private lateinit var checkOverlay    : ImageView
+    private lateinit var checkCapture    : ImageView
+    private lateinit var checkAccess     : ImageView
+    private lateinit var stepReady       : View
+    private lateinit var tvCaptureStatus : TextView
+    private lateinit var tvDebugStatus   : TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -69,7 +73,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        refreshAll()
+        window.decorView.postDelayed({ refreshAll() }, 300)
     }
 
     private fun bindViews() {
@@ -82,6 +86,7 @@ class MainActivity : AppCompatActivity() {
         checkAccess     = findViewById(R.id.checkAccess)
         stepReady       = findViewById(R.id.stepReady)
         tvCaptureStatus = findViewById(R.id.tvCaptureStatus)
+        tvDebugStatus   = findViewById(R.id.tvDebugStatus)
     }
 
     private fun setupClicks() {
@@ -98,90 +103,104 @@ class MainActivity : AppCompatActivity() {
                 Toast.makeText(this, "Pehle Step 1 (Overlay) complete karo!", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            tvCaptureStatus.text = "⏳ Permission dialog khul raha hai..."
+            // Clear old stale data before requesting fresh permission
+            savedResultCode = -1
+            savedResultData = null
+            tvCaptureStatus.text = "⏳ 'Entire Screen' choose karo → 'Start Now' dabao..."
             tvCaptureStatus.setTextColor(0xFFEAB308.toInt())
-            // Use the launcher — this is the ONLY correct way on Android 14+
             screenCaptureLauncher.launch(mpManager.createScreenCaptureIntent())
         }
 
         btnAccess.setOnClickListener {
             Toast.makeText(this,
-                "List mein 'FreeDrama Ad Skipper' dhundho → Toggle ON karo",
+                "List mein 'FreeDrama Ad Skipper' dhundho → toggle ON karo",
                 Toast.LENGTH_LONG).show()
             accessLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
 
+        // Tap debug bar to force refresh
+        tvDebugStatus.setOnClickListener {
+            refreshAll()
+            Toast.makeText(this, "Refreshed!", Toast.LENGTH_SHORT).show()
+        }
+
         btnLaunch.setOnClickListener {
             if (!allGranted()) {
-                highlightMissing()
+                showMissingHint()
                 return@setOnClickListener
             }
             launchService()
         }
     }
 
+    private fun captureGranted() = savedResultCode != -1 && savedResultData != null
+
     private fun refreshAll() {
         val overlayOk = Settings.canDrawOverlays(this)
-        val captureOk = projectionResultCode != -1 && projectionResultData != null
-        val accessOk  = AdSkipperAccessibilityService.isEnabled()
+        val captureOk = captureGranted()
+        val accessOk  = AdSkipperAccessibilityService.isEnabled(this)
 
-        // Overlay
+        // ── Debug bar — tap to refresh ────────────────────────────────────────
+        tvDebugStatus.text = "🔍 Overlay:${if(overlayOk)"✅" else "❌"}  " +
+                             "Screen:${if(captureOk)"✅" else "❌"}  " +
+                             "Access:${if(accessOk)"✅" else "❌"}  [tap=refresh]"
+        tvDebugStatus.setTextColor(
+            if (overlayOk && captureOk && accessOk) 0xFF22C55E.toInt() else 0xFFEAB308.toInt()
+        )
+
+        // Step 1 — Overlay
         checkOverlay.visibility = if (overlayOk) View.VISIBLE else View.GONE
-        btnOverlay.text    = if (overlayOk) "✓ Overlay Granted" else "Grant Overlay"
+        btnOverlay.text      = if (overlayOk) "✓ Overlay Granted" else "Grant Overlay"
         btnOverlay.isEnabled = !overlayOk
         btnOverlay.alpha     = if (overlayOk) 0.6f else 1.0f
 
-        // Screen Capture
+        // Step 2 — Screen Capture
         checkCapture.visibility = if (captureOk) View.VISIBLE else View.GONE
-        btnCapture.text    = if (captureOk) "✓ Screen Capture Granted" else "Grant Screen Capture"
+        btnCapture.text      = if (captureOk) "✓ Screen Capture Granted" else "Grant Screen Capture"
         btnCapture.isEnabled = !captureOk && overlayOk
-        btnCapture.alpha     = when {
-            captureOk  -> 0.6f
-            overlayOk  -> 1.0f
-            else       -> 0.3f
-        }
-        if (captureOk && tvCaptureStatus.text.contains("⏳")) {
-            tvCaptureStatus.text = "✅ Screen capture ready!"
+        btnCapture.alpha     = when { captureOk -> 0.6f; overlayOk -> 1.0f; else -> 0.3f }
+        if (captureOk) {
+            tvCaptureStatus.text = "✅ Screen capture ready! Ab Launch dabao."
             tvCaptureStatus.setTextColor(0xFF22C55E.toInt())
         }
 
-        // Accessibility
+        // Step 3 — Accessibility
         checkAccess.visibility = if (accessOk) View.VISIBLE else View.GONE
-        btnAccess.text    = if (accessOk) "✓ Accessibility Enabled" else "Enable Accessibility"
-        btnAccess.isEnabled = !accessOk
-        btnAccess.alpha     = if (accessOk) 0.6f else 1.0f
+        btnAccess.text       = if (accessOk) "✓ Accessibility Enabled" else "Enable Accessibility Service"
+        btnAccess.isEnabled  = !accessOk
+        btnAccess.alpha      = if (accessOk) 0.6f else 1.0f
 
-        // Launch button
+        // Launch
         val allDone = overlayOk && captureOk && accessOk
-        btnLaunch.isEnabled = allDone
-        btnLaunch.alpha     = if (allDone) 1.0f else 0.35f
+        btnLaunch.isEnabled  = allDone
+        btnLaunch.alpha      = if (allDone) 1.0f else 0.35f
         stepReady.visibility = if (allDone) View.VISIBLE else View.GONE
     }
 
     private fun allGranted() =
-        Settings.canDrawOverlays(this) &&
-        projectionResultCode != -1 &&
-        projectionResultData != null &&
-        AdSkipperAccessibilityService.isEnabled()
+        Settings.canDrawOverlays(this) && captureGranted() &&
+        AdSkipperAccessibilityService.isEnabled(this)
 
-    private fun highlightMissing() {
-        if (!Settings.canDrawOverlays(this))
-            Toast.makeText(this, "Step 1: Overlay permission do!", Toast.LENGTH_SHORT).show()
-        else if (projectionResultCode == -1)
-            Toast.makeText(this, "Step 2: Screen Capture allow karo!", Toast.LENGTH_SHORT).show()
-        else if (!AdSkipperAccessibilityService.isEnabled())
-            Toast.makeText(this, "Step 3: Accessibility Service ON karo!", Toast.LENGTH_SHORT).show()
+    private fun showMissingHint() {
+        val msg = when {
+            !Settings.canDrawOverlays(this)              -> "❌ Step 1: Overlay permission do!"
+            !captureGranted()                             -> "❌ Step 2: Screen Capture allow karo!"
+            !AdSkipperAccessibilityService.isEnabled(this) ->
+                "❌ Step 3: Accessibility ON karo!\nSettings → Accessibility → FreeDrama Ad Skipper → ON"
+            else -> "Ready hai!"
+        }
+        Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
     }
 
     private fun launchService() {
-        val intent = Intent(this, AdSkipperService::class.java).apply {
-            action = SkipConfig.ACTION_START
-            putExtra(AdSkipperService.EXTRA_RESULT_CODE, projectionResultCode)
-            putExtra(AdSkipperService.EXTRA_RESULT_DATA, projectionResultData)
-        }
-        startForegroundService(intent)
-        Toast.makeText(this,
-            "🚀 Ad Skipper chal gaya! Floating panel dekho.", Toast.LENGTH_LONG).show()
+        startForegroundService(
+            Intent(this, AdSkipperService::class.java).apply {
+                action = SkipConfig.ACTION_START
+                putExtra(AdSkipperService.EXTRA_RESULT_CODE, savedResultCode)
+                putExtra(AdSkipperService.EXTRA_RESULT_DATA, savedResultData)
+            }
+        )
+        Toast.makeText(this, "🚀 Ad Skipper chal gaya! Floating panel dekho.", Toast.LENGTH_LONG).show()
         finish()
     }
 }
