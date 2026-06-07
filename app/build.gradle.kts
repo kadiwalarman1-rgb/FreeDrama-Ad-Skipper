@@ -9,10 +9,10 @@ android {
 
     defaultConfig {
         applicationId = "com.freedrama.adskipper"
-        minSdk = 34
+        minSdk = 36          // Android 16 ONLY
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.2"
     }
 
     buildTypes {
@@ -22,6 +22,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            applicationIdSuffix = ".debug"
+            isDebuggable = true
         }
     }
 

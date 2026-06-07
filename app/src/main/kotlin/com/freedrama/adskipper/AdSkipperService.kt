@@ -37,93 +37,84 @@ class AdSkipperService : Service() {
     enum class State { IDLE, RUNNING, PAUSED, STOPPED }
 
     companion object {
-        const val EXTRA_RESULT_CODE   = "result_code"
-        const val EXTRA_RESULT_DATA   = "result_data"
+        const val EXTRA_RESULT_CODE = "result_code"
+        const val EXTRA_RESULT_DATA = "result_data"
 
         @Volatile var currentState = State.IDLE
             private set
-
-        fun getState() = currentState
     }
 
-    // ── MediaProjection ──────────────────────────────────────────────────────
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
 
-    // ── Screen metrics ───────────────────────────────────────────────────────
     private var screenWidth  = 0
     private var screenHeight = 0
     private var screenDensity = 0
 
-    // ── Detection ────────────────────────────────────────────────────────────
     private var detector: SkipDetector? = null
     private var detectionJob: Job? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    // ── Handler thread for image capture ────────────────────────────────────
     private lateinit var captureThread: HandlerThread
     private lateinit var captureHandler: Handler
 
-    // ── Floating panel ───────────────────────────────────────────────────────
     private var floatingPanel: FloatingPanelView? = null
-
-    // ── Wake lock ────────────────────────────────────────────────────────────
     private var wakeLock: PowerManager.WakeLock? = null
 
-    // ── Cooldown flag ────────────────────────────────────────────────────────
     @Volatile private var clickCooldown = false
     @Volatile private var isProcessing  = false
 
-    // ── Frame interval ───────────────────────────────────────────────────────
     private val frameIntervalMs = (1000L / SkipConfig.CAPTURE_FPS)
 
     override fun onCreate() {
         super.onCreate()
-        setupNotificationChannel()
+        createNotificationChannel()
         getScreenMetrics()
-        setupCaptureThread()
 
-        // Acquire partial wake lock so service runs even when screen is off
+        captureThread = HandlerThread("AdSkipperCapture").also { it.start() }
+        captureHandler = Handler(captureThread.looper)
+
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(
             PowerManager.PARTIAL_WAKE_LOCK,
             "FreeDramaAdSkipper::WakeLock"
-        ).apply { acquire(60 * 60 * 1000L) } // 1 hour max
+        ).apply { acquire(3600000L) }
 
-        Log.i(TAG, "Service created (${screenWidth}x${screenHeight} @${screenDensity}dpi)")
+        Log.i(TAG, "Service created — ${screenWidth}x${screenHeight}")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+
             SkipConfig.ACTION_START -> {
-                val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
-                val resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+                val code = intent.getIntExtra(EXTRA_RESULT_CODE, -1)
+                val data = intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
 
-                startForeground(SkipConfig.NOTIFICATION_ID, buildNotification(State.RUNNING))
+                // ── CRITICAL: startForeground FIRST, then MediaProjection ────────
+                // Android 14+ (and 16) requires foreground to be active before
+                // using the MediaProjection token. This is the correct order.
+                startForeground(
+                    SkipConfig.NOTIFICATION_ID,
+                    buildNotification(State.RUNNING)
+                )
 
-                if (resultCode != -1 && resultData != null) {
-                    setupMediaProjection(resultCode, resultData)
-                    setupFloatingPanel()
-                    startDetection()
+                if (code != -1 && data != null) {
+                    setupProjectionAndStart(code, data)
                 } else {
-                    Log.e(TAG, "Missing MediaProjection data")
+                    Log.e(TAG, "No projection data — stopping")
                     stopSelf()
                 }
             }
-            SkipConfig.ACTION_PAUSE -> {
-                pauseDetection()
-            }
-            SkipConfig.ACTION_STOP -> {
-                stopEverything()
-            }
+
+            SkipConfig.ACTION_PAUSE -> pauseDetection()
+            SkipConfig.ACTION_STOP  -> stopEverything()
         }
         return START_NOT_STICKY
     }
 
-    // ── MediaProjection setup ────────────────────────────────────────────────
-
-    private fun setupMediaProjection(resultCode: Int, data: Intent) {
+    // ── Setup projection AFTER foreground is started ─────────────────────────
+    private fun setupProjectionAndStart(resultCode: Int, data: Intent) {
         val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mpManager.getMediaProjection(resultCode, data)
 
@@ -134,7 +125,6 @@ class AdSkipperService : Service() {
             }
         }, captureHandler)
 
-        // ImageReader: single slot, RGBA_8888, replace old frames immediately
         imageReader = ImageReader.newInstance(
             screenWidth, screenHeight,
             PixelFormat.RGBA_8888, 2
@@ -148,10 +138,11 @@ class AdSkipperService : Service() {
         )
 
         detector = SkipDetector(screenWidth, screenHeight)
-        Log.i(TAG, "MediaProjection + VirtualDisplay ready")
-    }
 
-    // ── Detection loop ───────────────────────────────────────────────────────
+        setupFloatingPanel()
+        startDetection()
+        Log.i(TAG, "MediaProjection + VirtualDisplay ready ✓")
+    }
 
     private fun startDetection() {
         currentState = State.RUNNING
@@ -159,50 +150,44 @@ class AdSkipperService : Service() {
         floatingPanel?.setState(State.RUNNING)
 
         detectionJob = serviceScope.launch {
-            Log.i(TAG, "Detection loop started at ${SkipConfig.CAPTURE_FPS} FPS")
+            Log.i(TAG, "Detection started @ ${SkipConfig.CAPTURE_FPS} FPS")
             while (currentState == State.RUNNING) {
-                val loopStart = System.currentTimeMillis()
-
+                val t0 = System.currentTimeMillis()
                 if (!clickCooldown && !isProcessing) {
                     isProcessing = true
                     captureAndAnalyze()
                     isProcessing = false
                 }
-
-                val elapsed = System.currentTimeMillis() - loopStart
-                val sleep = frameIntervalMs - elapsed
+                val sleep = frameIntervalMs - (System.currentTimeMillis() - t0)
                 if (sleep > 0) delay(sleep)
             }
-            Log.i(TAG, "Detection loop ended")
         }
     }
 
     private suspend fun captureAndAnalyze() {
         val image = imageReader?.acquireLatestImage() ?: return
         try {
-            val plane = image.planes[0]
-            val buffer = plane.buffer
+            val plane      = image.planes[0]
+            val buffer     = plane.buffer
             val pixelStride = plane.pixelStride
-            val rowStride = plane.rowStride
+            val rowStride  = plane.rowStride
             val rowPadding = rowStride - pixelStride * screenWidth
 
-            val bitmap = Bitmap.createBitmap(
+            val bmp = Bitmap.createBitmap(
                 screenWidth + rowPadding / pixelStride,
-                screenHeight,
-                Bitmap.Config.ARGB_8888
+                screenHeight, Bitmap.Config.ARGB_8888
             )
-            bitmap.copyPixelsFromBuffer(buffer)
+            bmp.copyPixelsFromBuffer(buffer)
 
-            // Crop to exact screen width if needed
-            val finalBitmap = if (bitmap.width != screenWidth) {
-                Bitmap.createBitmap(bitmap, 0, 0, screenWidth, screenHeight)
-            } else bitmap
+            val final = if (bmp.width != screenWidth)
+                Bitmap.createBitmap(bmp, 0, 0, screenWidth, screenHeight)
+            else bmp
 
-            val clickPoint = detector?.detect(finalBitmap)
-            if (clickPoint != null) {
-                Log.i(TAG, "⚡ Skip button found! Clicking at (${clickPoint.x}, ${clickPoint.y})")
-                val tapped = AdSkipperAccessibilityService.performTap(clickPoint)
-                if (tapped) {
+            val hit = detector?.detect(final)
+            if (hit != null) {
+                Log.i(TAG, "⚡ CLICK at (${hit.x}, ${hit.y})")
+                val ok = AdSkipperAccessibilityService.performTap(hit)
+                if (ok) {
                     clickCooldown = true
                     serviceScope.launch {
                         delay(SkipConfig.CLICK_COOLDOWN_MS)
@@ -211,9 +196,8 @@ class AdSkipperService : Service() {
                 }
             }
 
-            if (finalBitmap != bitmap) finalBitmap.recycle()
-            bitmap.recycle()
-
+            if (final != bmp) final.recycle()
+            bmp.recycle()
         } finally {
             image.close()
         }
@@ -224,13 +208,10 @@ class AdSkipperService : Service() {
         detectionJob?.cancel()
         updateNotification(State.PAUSED)
         floatingPanel?.setState(State.PAUSED)
-        Log.i(TAG, "Detection paused")
     }
 
     fun resumeDetection() {
-        if (currentState == State.PAUSED) {
-            startDetection()
-        }
+        if (currentState == State.PAUSED) startDetection()
     }
 
     private fun stopEverything() {
@@ -238,36 +219,24 @@ class AdSkipperService : Service() {
         detectionJob?.cancel()
         floatingPanel?.removeFromWindow()
         floatingPanel = null
-        cleanupProjection()
+        virtualDisplay?.release()
+        imageReader?.close()
+        mediaProjection?.stop()
         detector?.close()
         wakeLock?.release()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
-        Log.i(TAG, "Service fully stopped")
     }
-
-    private fun cleanupProjection() {
-        virtualDisplay?.release()
-        imageReader?.close()
-        mediaProjection?.stop()
-        virtualDisplay = null
-        imageReader = null
-        mediaProjection = null
-    }
-
-    // ── Floating Panel ───────────────────────────────────────────────────────
 
     private fun setupFloatingPanel() {
         floatingPanel = FloatingPanelView(this).apply {
             addToWindow()
             setState(State.RUNNING)
-            onStart  = { resumeDetection() }
-            onPause  = { pauseDetection() }
-            onStop   = { stopEverything() }
+            onStart = { resumeDetection() }
+            onPause = { pauseDetection() }
+            onStop  = { stopEverything() }
         }
     }
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
 
     private fun getScreenMetrics() {
         val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -279,65 +248,44 @@ class AdSkipperService : Service() {
         screenDensity = metrics.densityDpi
     }
 
-    private fun setupCaptureThread() {
-        captureThread = HandlerThread("AdSkipperCapture").also { it.start() }
-        captureHandler = Handler(captureThread.looper)
-    }
-
-    private fun setupNotificationChannel() {
-        val channel = NotificationChannel(
+    private fun createNotificationChannel() {
+        val ch = NotificationChannel(
             SkipConfig.NOTIFICATION_CHANNEL_ID,
             SkipConfig.NOTIFICATION_CHANNEL_NAME,
             NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "FreeDrama Ad Skipper running in background"
-            setShowBadge(false)
-        }
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(channel)
+        ).apply { setShowBadge(false) }
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(ch)
     }
 
     private fun buildNotification(state: State): Notification {
-        val statusText = when (state) {
+        val text = when (state) {
             State.RUNNING -> "🟢 Detecting ads..."
             State.PAUSED  -> "🟡 Paused"
-            State.STOPPED -> "🔴 Stopped"
-            State.IDLE    -> "⚪ Idle"
+            else          -> "🔴 Stopped"
         }
 
-        val openIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val pauseIntent = PendingIntent.getService(
-            this, 1,
+        val open  = PendingIntent.getActivity(this, 0,
+            Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+        val pause = PendingIntent.getService(this, 1,
             Intent(this, AdSkipperService::class.java).apply { action = SkipConfig.ACTION_PAUSE },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val stopIntent = PendingIntent.getService(
-            this, 2,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val stop  = PendingIntent.getService(this, 2,
             Intent(this, AdSkipperService::class.java).apply { action = SkipConfig.ACTION_STOP },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
         return NotificationCompat.Builder(this, SkipConfig.NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_close_clear_cancel)
             .setContentTitle("FreeDrama Ad Skipper")
-            .setContentText(statusText)
-            .setContentIntent(openIntent)
-            .addAction(android.R.drawable.ic_media_pause, "Pause", pauseIntent)
-            .addAction(android.R.drawable.ic_delete, "Stop", stopIntent)
-            .setOngoing(true)
-            .setSilent(true)
-            .build()
+            .setContentText(text)
+            .setContentIntent(open)
+            .addAction(android.R.drawable.ic_media_pause, "Pause", pause)
+            .addAction(android.R.drawable.ic_delete, "Stop", stop)
+            .setOngoing(true).setSilent(true).build()
     }
 
     private fun updateNotification(state: State) {
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(SkipConfig.NOTIFICATION_ID, buildNotification(state))
+        (getSystemService(NOTIFICATION_SERVICE) as NotificationManager)
+            .notify(SkipConfig.NOTIFICATION_ID, buildNotification(state))
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -346,6 +294,5 @@ class AdSkipperService : Service() {
         super.onDestroy()
         serviceScope.cancel()
         captureThread.quit()
-        Log.i(TAG, "Service destroyed")
     }
 }

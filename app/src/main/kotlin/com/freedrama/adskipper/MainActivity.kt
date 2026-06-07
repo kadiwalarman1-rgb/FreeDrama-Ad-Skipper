@@ -14,201 +14,174 @@ import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.NotificationManagerCompat
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var mpManager: MediaProjectionManager
 
-    // ── Modern Activity Result API (fixes Android 14+ screen capture bug) ───
+    // Saved projection data
     private var projectionResultCode = -1
     private var projectionResultData: Intent? = null
 
-    // Screen capture launcher — properly handles BOTH "Single App" & "Entire Screen"
+    // ── Modern ActivityResultLauncher (fixes Android 14+ screen capture) ────
     private val screenCaptureLauncher: ActivityResultLauncher<Intent> =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                 projectionResultCode = result.resultCode
-                projectionResultData  = result.data
-                Toast.makeText(this, "✓ Screen capture permission granted!", Toast.LENGTH_SHORT).show()
+                projectionResultData  = result.data!!.clone() as Intent
+                tvCaptureStatus.text  = "✅ Screen capture ready!"
+                tvCaptureStatus.setTextColor(0xFF22C55E.toInt())
+                Toast.makeText(this, "✓ Screen capture granted!", Toast.LENGTH_SHORT).show()
             } else {
                 projectionResultCode = -1
                 projectionResultData  = null
-                Toast.makeText(this,
-                    "Screen capture denied — please try again and choose 'Entire Screen'",
-                    Toast.LENGTH_LONG).show()
+                tvCaptureStatus.text  = "❌ Denied — dobara try karo, 'Entire Screen' choose karo"
+                tvCaptureStatus.setTextColor(0xFFEF4444.toInt())
             }
-            refreshPermissionChecks()
+            refreshAll()
         }
 
-    // Overlay settings launcher
     private val overlayLauncher: ActivityResultLauncher<Intent> =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            refreshPermissionChecks()
-        }
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { refreshAll() }
 
-    // Accessibility settings launcher
-    private val accessibilityLauncher: ActivityResultLauncher<Intent> =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            refreshPermissionChecks()
-        }
+    private val accessLauncher: ActivityResultLauncher<Intent> =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { refreshAll() }
 
-    // ── Views ────────────────────────────────────────────────────────────────
-    private lateinit var btnOverlay        : Button
-    private lateinit var btnScreenCapture  : Button
-    private lateinit var btnAccessibility  : Button
-    private lateinit var btnLaunch         : Button
-
-    private lateinit var checkOverlay      : ImageView
-    private lateinit var checkCapture      : ImageView
-    private lateinit var checkAccess       : ImageView
-
-    private lateinit var stepReady         : View
-    private lateinit var tvCaptureStatus   : TextView
+    // ── Views ─────────────────────────────────────────────────────────────
+    private lateinit var btnOverlay       : Button
+    private lateinit var btnCapture       : Button
+    private lateinit var btnAccess        : Button
+    private lateinit var btnLaunch        : Button
+    private lateinit var checkOverlay     : ImageView
+    private lateinit var checkCapture     : ImageView
+    private lateinit var checkAccess      : ImageView
+    private lateinit var stepReady        : View
+    private lateinit var tvCaptureStatus  : TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-
         bindViews()
-        setupClickListeners()
-        refreshPermissionChecks()
+        setupClicks()
+        refreshAll()
     }
 
     override fun onResume() {
         super.onResume()
-        refreshPermissionChecks()
+        refreshAll()
     }
 
     private fun bindViews() {
-        btnOverlay        = findViewById(R.id.btnGrantOverlay)
-        btnScreenCapture  = findViewById(R.id.btnGrantCapture)
-        btnAccessibility  = findViewById(R.id.btnGrantAccessibility)
-        btnLaunch         = findViewById(R.id.btnLaunchService)
-        checkOverlay      = findViewById(R.id.checkOverlay)
-        checkCapture      = findViewById(R.id.checkCapture)
-        checkAccess       = findViewById(R.id.checkAccess)
-        stepReady         = findViewById(R.id.stepReady)
-        tvCaptureStatus   = findViewById(R.id.tvCaptureStatus)
+        btnOverlay      = findViewById(R.id.btnGrantOverlay)
+        btnCapture      = findViewById(R.id.btnGrantCapture)
+        btnAccess       = findViewById(R.id.btnGrantAccessibility)
+        btnLaunch       = findViewById(R.id.btnLaunchService)
+        checkOverlay    = findViewById(R.id.checkOverlay)
+        checkCapture    = findViewById(R.id.checkCapture)
+        checkAccess     = findViewById(R.id.checkAccess)
+        stepReady       = findViewById(R.id.stepReady)
+        tvCaptureStatus = findViewById(R.id.tvCaptureStatus)
     }
 
-    private fun setupClickListeners() {
+    private fun setupClicks() {
 
-        // Step 1: Overlay permission
         btnOverlay.setOnClickListener {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:$packageName")
+            overlayLauncher.launch(
+                Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName"))
             )
-            overlayLauncher.launch(intent)
         }
 
-        // Step 2: Screen capture — use ActivityResultLauncher (fixes Android 14+ bug!)
-        btnScreenCapture.setOnClickListener {
+        btnCapture.setOnClickListener {
             if (!Settings.canDrawOverlays(this)) {
-                Toast.makeText(this,
-                    "Step 1 pehle complete karo (Overlay permission)",
-                    Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Pehle Step 1 (Overlay) complete karo!", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
-            // Show hint before launching
-            Toast.makeText(this,
-                "💡 'Entire Screen' choose karo for best results",
-                Toast.LENGTH_LONG).show()
-            // Launch screen capture intent via modern launcher
+            tvCaptureStatus.text = "⏳ Permission dialog khul raha hai..."
+            tvCaptureStatus.setTextColor(0xFFEAB308.toInt())
+            // Use the launcher — this is the ONLY correct way on Android 14+
             screenCaptureLauncher.launch(mpManager.createScreenCaptureIntent())
         }
 
-        // Step 3: Accessibility
-        btnAccessibility.setOnClickListener {
+        btnAccess.setOnClickListener {
             Toast.makeText(this,
-                "FreeDrama Ad Skipper dhundho aur ON karo",
+                "List mein 'FreeDrama Ad Skipper' dhundho → Toggle ON karo",
                 Toast.LENGTH_LONG).show()
-            accessibilityLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            accessLauncher.launch(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
 
-        // Launch button
         btnLaunch.setOnClickListener {
-            when {
-                !Settings.canDrawOverlays(this) ->
-                    Toast.makeText(this, "Step 1: Overlay permission do!", Toast.LENGTH_SHORT).show()
-                projectionResultCode == -1 ->
-                    Toast.makeText(this, "Step 2: Screen Capture allow karo!", Toast.LENGTH_SHORT).show()
-                !AdSkipperAccessibilityService.isEnabled() ->
-                    Toast.makeText(this, "Step 3: Accessibility Service ON karo!", Toast.LENGTH_SHORT).show()
-                else -> launchService()
+            if (!allGranted()) {
+                highlightMissing()
+                return@setOnClickListener
             }
+            launchService()
         }
     }
 
-    private fun refreshPermissionChecks() {
-        val overlayOk  = Settings.canDrawOverlays(this)
-        val captureOk  = projectionResultCode != -1 && projectionResultData != null
-        val accessOk   = AdSkipperAccessibilityService.isEnabled()
+    private fun refreshAll() {
+        val overlayOk = Settings.canDrawOverlays(this)
+        val captureOk = projectionResultCode != -1 && projectionResultData != null
+        val accessOk  = AdSkipperAccessibilityService.isEnabled()
 
-        // ── Step 1: Overlay ──────────────────────────────────────────────────
+        // Overlay
         checkOverlay.visibility = if (overlayOk) View.VISIBLE else View.GONE
-        if (overlayOk) {
-            btnOverlay.text = "✓ Overlay Granted"
-            btnOverlay.isEnabled = false
-            btnOverlay.alpha = 0.7f
-        } else {
-            btnOverlay.text = "Grant Overlay"
-            btnOverlay.isEnabled = true
-            btnOverlay.alpha = 1.0f
-        }
+        btnOverlay.text    = if (overlayOk) "✓ Overlay Granted" else "Grant Overlay"
+        btnOverlay.isEnabled = !overlayOk
+        btnOverlay.alpha     = if (overlayOk) 0.6f else 1.0f
 
-        // ── Step 2: Screen Capture ───────────────────────────────────────────
+        // Screen Capture
         checkCapture.visibility = if (captureOk) View.VISIBLE else View.GONE
-        if (captureOk) {
-            btnScreenCapture.text = "✓ Screen Capture Granted"
-            btnScreenCapture.isEnabled = false
-            btnScreenCapture.alpha = 0.7f
-            tvCaptureStatus.text = "✅ Permission saved — ready!"
+        btnCapture.text    = if (captureOk) "✓ Screen Capture Granted" else "Grant Screen Capture"
+        btnCapture.isEnabled = !captureOk && overlayOk
+        btnCapture.alpha     = when {
+            captureOk  -> 0.6f
+            overlayOk  -> 1.0f
+            else       -> 0.3f
+        }
+        if (captureOk && tvCaptureStatus.text.contains("⏳")) {
+            tvCaptureStatus.text = "✅ Screen capture ready!"
             tvCaptureStatus.setTextColor(0xFF22C55E.toInt())
-        } else {
-            btnScreenCapture.text = "Grant Screen Capture"
-            btnScreenCapture.isEnabled = overlayOk // only enable after step 1
-            btnScreenCapture.alpha = if (overlayOk) 1.0f else 0.4f
-            tvCaptureStatus.text = "Tap button → system dialog aayega → 'Start Now' dabao"
-            tvCaptureStatus.setTextColor(0xFF94A3B8.toInt())
         }
 
-        // ── Step 3: Accessibility ────────────────────────────────────────────
+        // Accessibility
         checkAccess.visibility = if (accessOk) View.VISIBLE else View.GONE
-        if (accessOk) {
-            btnAccessibility.text = "✓ Accessibility Enabled"
-            btnAccessibility.isEnabled = false
-            btnAccessibility.alpha = 0.7f
-        } else {
-            btnAccessibility.text = "Enable Accessibility"
-            btnAccessibility.isEnabled = true
-            btnAccessibility.alpha = 1.0f
-        }
+        btnAccess.text    = if (accessOk) "✓ Accessibility Enabled" else "Enable Accessibility"
+        btnAccess.isEnabled = !accessOk
+        btnAccess.alpha     = if (accessOk) 0.6f else 1.0f
 
-        // ── Launch button — unlock only when ALL 3 done ──────────────────────
+        // Launch button
         val allDone = overlayOk && captureOk && accessOk
         btnLaunch.isEnabled = allDone
-        btnLaunch.alpha = if (allDone) 1.0f else 0.4f
+        btnLaunch.alpha     = if (allDone) 1.0f else 0.35f
         stepReady.visibility = if (allDone) View.VISIBLE else View.GONE
+    }
 
-        if (allDone) {
-            btnLaunch.text = "🚀  Launch Ad Skipper"
-        }
+    private fun allGranted() =
+        Settings.canDrawOverlays(this) &&
+        projectionResultCode != -1 &&
+        projectionResultData != null &&
+        AdSkipperAccessibilityService.isEnabled()
+
+    private fun highlightMissing() {
+        if (!Settings.canDrawOverlays(this))
+            Toast.makeText(this, "Step 1: Overlay permission do!", Toast.LENGTH_SHORT).show()
+        else if (projectionResultCode == -1)
+            Toast.makeText(this, "Step 2: Screen Capture allow karo!", Toast.LENGTH_SHORT).show()
+        else if (!AdSkipperAccessibilityService.isEnabled())
+            Toast.makeText(this, "Step 3: Accessibility Service ON karo!", Toast.LENGTH_SHORT).show()
     }
 
     private fun launchService() {
-        val serviceIntent = Intent(this, AdSkipperService::class.java).apply {
+        val intent = Intent(this, AdSkipperService::class.java).apply {
             action = SkipConfig.ACTION_START
             putExtra(AdSkipperService.EXTRA_RESULT_CODE, projectionResultCode)
             putExtra(AdSkipperService.EXTRA_RESULT_DATA, projectionResultData)
         }
-        startForegroundService(serviceIntent)
+        startForegroundService(intent)
         Toast.makeText(this,
-            "🚀 Ad Skipper start ho gaya! Floating panel dekhna.",
-            Toast.LENGTH_LONG).show()
+            "🚀 Ad Skipper chal gaya! Floating panel dekho.", Toast.LENGTH_LONG).show()
         finish()
     }
 }
